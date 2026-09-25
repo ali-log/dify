@@ -13,6 +13,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from libs.datetime_utils import naive_utc_now
+from libs.schedule_utils import calculate_next_run_at
 from models.enums import AppTriggerType
 from models.trigger import AppTrigger, WorkflowSchedulePlan
 from schedule import workflow_schedule_task
@@ -57,6 +58,20 @@ def _add_due_plan(session: Session, *, timezone: str, next_run_at: datetime) -> 
     return plan
 
 
+def _fail_poll_after_calculations(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+    """Fail a poll that calculates more than `limit` next runs, so a poll that never ends fails instead of hanging."""
+    calculations = 0
+
+    def bounded_calculate_next_run_at(cron_expression: str, timezone: str) -> datetime:
+        nonlocal calculations
+        calculations += 1
+        if calculations > limit:
+            pytest.fail(f"The poll calculated more than {limit} next runs without ending")
+        return calculate_next_run_at(cron_expression, timezone)
+
+    monkeypatch.setattr(workflow_schedule_task, "calculate_next_run_at", bounded_calculate_next_run_at)
+
+
 @pytest.mark.parametrize("batch_size", [100, 1], ids=["same-batch", "own-batch"])
 def test_plan_whose_next_run_cannot_be_calculated_does_not_block_other_due_plans(
     batch_size: int,
@@ -64,22 +79,55 @@ def test_plan_whose_next_run_cannot_be_calculated_does_not_block_other_due_plans
     sqlite_session: Session,
     config_overrides: Callable[..., None],
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_overrides(WORKFLOW_SCHEDULE_POLLER_BATCH_SIZE=batch_size)
     caplog.set_level(logging.WARNING, logger=workflow_schedule_task.logger.name)
     now = naive_utc_now()
-    # The most overdue plan is fetched first; with a batch size of 1 it fills the first batch alone.
+    # Due plans are fetched most overdue first, so the raising plan comes between the two UTC plans; with a batch
+    # size of 1 each plan fills a batch alone.
+    utc_before = _add_due_plan(sqlite_session, timezone="UTC", next_run_at=now - timedelta(minutes=15))
     broken_due_at = now - timedelta(minutes=10)
     broken = _add_due_plan(sqlite_session, timezone="Invalid/Timezone", next_run_at=broken_due_at)
-    utc = _add_due_plan(sqlite_session, timezone="UTC", next_run_at=now - timedelta(minutes=5))
+    utc_after = _add_due_plan(sqlite_session, timezone="UTC", next_run_at=now - timedelta(minutes=5))
+    # A poll calculates the next run of each of the 3 due plans once.
+    _fail_poll_after_calculations(monkeypatch, limit=3)
 
     workflow_schedule_task.poll_workflow_schedules.run()
 
-    assert dispatched_schedule_ids == [utc.id]
+    assert dispatched_schedule_ids == [utc_before.id, utc_after.id]
     sqlite_session.expire_all()
-    utc_next_run_at = utc.next_run_at
-    assert utc_next_run_at is not None
-    assert utc_next_run_at > now
+    for utc in (utc_before, utc_after):
+        utc_next_run_at = utc.next_run_at
+        assert utc_next_run_at is not None
+        assert utc_next_run_at > now
     # Skipped for this poll only: it stays due, so the next poll tries it again.
     assert broken.next_run_at == broken_due_at
     assert any(broken.id in record.getMessage() for record in caplog.records)
+
+
+def test_poll_skips_and_logs_each_plan_whose_next_run_cannot_be_calculated_once(
+    dispatched_schedule_ids: list[str],
+    sqlite_session: Session,
+    config_overrides: Callable[..., None],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_overrides(WORKFLOW_SCHEDULE_POLLER_BATCH_SIZE=1)
+    caplog.set_level(logging.WARNING, logger=workflow_schedule_task.logger.name)
+    now = naive_utc_now()
+    broken_due_at = [now - timedelta(minutes=10), now - timedelta(minutes=5)]
+    broken = [
+        _add_due_plan(sqlite_session, timezone="Invalid/Timezone", next_run_at=due_at) for due_at in broken_due_at
+    ]
+    # A poll calculates the next run of each of the 2 due plans once. If a skipped plan came back, the two would fill
+    # the batches in turn and the poll would never end.
+    _fail_poll_after_calculations(monkeypatch, limit=2)
+
+    workflow_schedule_task.poll_workflow_schedules.run()
+
+    assert dispatched_schedule_ids == []
+    sqlite_session.expire_all()
+    assert [plan.next_run_at for plan in broken] == broken_due_at
+    for plan in broken:
+        assert sum(plan.id in record.getMessage() for record in caplog.records) == 1

@@ -279,6 +279,13 @@ class TestTimezoneHandlingEnhanced(unittest.TestCase):
                 result = calculate_next_run_at("*/10 * * * *", timezone, base_time)
                 assert result == expected
 
+        # Daily 02:30 from 02:30:05 +01 on 14 February 2026 -> 02:30 +01 on 15 February, the first of its two
+        # occurrences, as 03:00 +01 falls back to 02:00 +00 that day
+        for timezone in ["Africa/Casablanca", "Africa/El_Aaiun"]:
+            with self.subTest(timezone=timezone, cron_expression="30 2 * * *"):
+                result = calculate_next_run_at("30 2 * * *", timezone, datetime(2026, 2, 14, 1, 30, 5, tzinfo=UTC))
+                assert result == datetime(2026, 2, 15, 1, 30, tzinfo=UTC)
+
         # Daily 01:30 from 01:30:05 IST on 24 October -> 01:30 IST on 25 October, the first of its two occurrences
         result = calculate_next_run_at("30 1 * * *", "Europe/Dublin", datetime(2026, 10, 24, 0, 30, 5, tzinfo=UTC))
         assert result == datetime(2026, 10, 25, 0, 30, tzinfo=UTC)

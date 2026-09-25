@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytz  # type: ignore[import-untyped]
 from croniter import croniter
@@ -38,7 +39,12 @@ def calculate_next_run_at(
             f"(@daily, @weekly, etc.). Got {len(parts)} fields: '{cron_expression}'"
         )
 
-    tz = pytz.timezone(timezone)
+    # croniter assumes a pytz zone's DST is positive and fails at negative-DST fall-backs (e.g. Europe/Dublin);
+    # with a zoneinfo zone it picks the repeated hour by fold instead. Unknown zones still raise pytz's error.
+    try:
+        tz = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as e:
+        raise pytz.UnknownTimeZoneError(timezone) from e
 
     if base_time is None:
         base_time = datetime.now(UTC)

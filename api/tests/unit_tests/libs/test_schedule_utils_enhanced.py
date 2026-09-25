@@ -279,6 +279,10 @@ class TestTimezoneHandlingEnhanced(unittest.TestCase):
                 result = calculate_next_run_at("*/10 * * * *", timezone, base_time)
                 assert result == expected
 
+        # Daily 01:30 from 01:30:05 IST on 24 October -> 01:30 IST on 25 October, the first of its two occurrences
+        result = calculate_next_run_at("30 1 * * *", "Europe/Dublin", datetime(2026, 10, 24, 0, 30, 5, tzinfo=UTC))
+        assert result == datetime(2026, 10, 25, 0, 30, tzinfo=UTC)
+
 
 class TestErrorHandlingEnhanced(unittest.TestCase):
     """Test error handling for enhanced syntax."""

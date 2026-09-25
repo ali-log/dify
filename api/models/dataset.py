@@ -809,7 +809,7 @@ class DocumentSegment(TypeBase):
         text = self.content
 
         # For data before v0.10.0
-        pattern = r"/files/([a-f0-9\-]+)/image-preview(?:\?.*?)?"
+        pattern = r"/files/([a-f0-9\-]+)/image-preview(?:\?[^\s\)\"\']*)?"
         matches = re.finditer(pattern, text)
         for match in matches:
             upload_file_id = match.group(1)
@@ -826,7 +826,7 @@ class DocumentSegment(TypeBase):
             signed_urls.append((match.start(), match.end(), signed_url))
 
         # For data after v0.10.0
-        pattern = r"/files/([a-f0-9\-]+)/file-preview(?:\?.*?)?"
+        pattern = r"/files/([a-f0-9\-]+)/file-preview(?:\?[^\s\)\"\']*)?"
         matches = re.finditer(pattern, text)
         for match in matches:
             upload_file_id = match.group(1)
@@ -861,9 +861,9 @@ class DocumentSegment(TypeBase):
             signed_url = f"{base_url}?{params}"
             signed_urls.append((match.start(), match.end(), signed_url))
 
-        # Reconstruct the text with signed URLs
+        # Reconstruct the text with signed URLs, splicing in text order so the running offset stays valid
         offset = 0
-        for start, end, signed_url in signed_urls:
+        for start, end, signed_url in sorted(signed_urls):
             text = text[: start + offset] + signed_url + text[end + offset :]
             offset += len(signed_url) - (end - start)
 
